@@ -43,6 +43,8 @@ import threading
 import imp
 import json
 
+from multiprocessing import active_children
+
 from shinken.basemodule import BaseModule
 from shinken.message import Message
 from shinken.misc.regenerator import Regenerator
@@ -226,6 +228,7 @@ class Webui_broker(BaseModule, Daemon):
         self.modules_manager.set_modules(self.modules)
         # We can now output some previously silenced debug output
         self.do_load_modules()
+        self.modules_manager.start_external_instances()
         for inst in self.modules_manager.instances:
             f = getattr(inst, 'load', None)
             if f and callable(f):
@@ -342,6 +345,33 @@ class Webui_broker(BaseModule, Daemon):
         # pages: need it. So it's managed at a
         # function wrapper at loading pass
 
+    def stop_process(self):
+        logger.warning("STOOOOOOP process")
+        try:
+            logger.warning("Close subprocesses")
+            #logger.warning('Stopping all modules')
+            #self.modules_manager.stop_all()
+            #logger.warning('Stopping inter-process message')
+            for mod in self.modules_manager.get_external_instances('running'):
+                logger.warning("Ask top process for %s", mod.get_name())
+                mod.stop_process()
+                logger.warning("Stop process done")
+        except Exception as e:
+            logger.warning(e)
+        #if getattr(self, 'modules_manager', None):
+            #self.modules_manager.stop_all()
+        logger.warning("Stop process")
+        super(Webui_broker, self).stop_process()
+        logger.warning("Process stopped")
+
+    def do_stop(self):
+        logger.warning("DO STOOOOOOP")
+        act = active_children()
+        for a in act:
+            a.terminate()
+            a.join(1)
+        super(Webui_broker, self).do_stop()
+
     # It will say if we can launch a page rendering or not.
     # We can only if there is no writer running from now
     def wait_for_no_writers(self):
@@ -427,6 +457,7 @@ class Webui_broker(BaseModule, Daemon):
                             logger.debug("[WebUI] Exception type: %s", self.name, type(exp))
                             logger.debug("[WebUI] Back trace of this kill: %s", traceback.format_exc())
                             self.modules_manager.set_to_restart(mod)
+
                 except Exception, exp:
                     logger.error("[WebUI] manage_brok_thread exception")
                     msg = Message(id=0, type='ICrash', data={'name': self.get_name(), 'exception': exp, 'trace': traceback.format_exc()})
@@ -443,6 +474,20 @@ class Webui_broker(BaseModule, Daemon):
                     self.global_lock.acquire()
                     self.nb_writers -= 1
                     self.global_lock.release()
+
+            to_send = [b for b in l if getattr(b, 'need_send_to_ext', True)]
+            for mod in self.modules_manager.get_external_instances():
+                try:
+                    mod.to_q.put(to_send)
+                except Exception, exp:
+                    # first we must find the modules
+                    logger.debug(str(exp.__dict__))
+                    logger.warning("The mod %s queue raise an exception: %s, "
+                                   "I'm tagging it to restart later",
+                                   mod.get_name(), str(exp))
+                    logger.warning("Exception type: %s", type(exp))
+                    logger.warning("Back trace of this kill: %s", traceback.format_exc())
+                    self.modules_manager.set_to_restart(mod)
 
         logger.debug("[WebUI] manage_brok_thread end ...")
 
